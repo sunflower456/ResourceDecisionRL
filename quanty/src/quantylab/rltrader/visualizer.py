@@ -24,7 +24,7 @@ class Visualizer:
         self.xticks = []
         self.xlabels = []
 
-    def prepare(self, chart_data, title):
+    def prepare(self, resource_data, title):
         self.title = title
         with lock:
             # 캔버스를 초기화하고 5개의 차트를 그릴 준비
@@ -40,25 +40,25 @@ class Visualizer:
                 ax.yaxis.tick_right()
             # 차트 1. 일봉 차트
             self.axes[0].set_ylabel('Env.')  # y 축 레이블 표시
-            x = np.arange(len(chart_data))
+            x = np.arange(len(resource_data))
             # open, high, low, close 순서로된 2차원 배열
             ohlc = np.hstack((
-                x.reshape(-1, 1), np.array(chart_data)[:, 1:-1]))
+                x.reshape(-1, 1), np.array(resource_data)[:, 1:-1]))
             # 양봉은 빨간색으로 음봉은 파란색으로 표시
             candlestick_ohlc(self.axes[0], ohlc, colorup='r', colordown='b')
             # 거래량 가시화
             ax = self.axes[0].twinx()
-            volume = np.array(chart_data)[:, -1].tolist()
+            volume = np.array(resource_data)[:, -1].tolist()
             ax.bar(x, volume, color='b', alpha=0.3)
             # x축 설정
-            self.x = np.arange(len(chart_data['date']))
-            self.xticks = chart_data.index[[0, -1]]
-            self.xlabels = chart_data.iloc[[0, -1]]['date']
+            self.x = np.arange(len(resource_data['date']))
+            self.xticks = resource_data.index[[0, -1]]
+            self.xlabels = resource_data.iloc[[0, -1]]['date']
             
     def plot(self, epoch_str=None, num_epoches=None, epsilon=None,
             action_list=None, actions=None, num_stocks=None,
             outvals_value=[], outvals_policy=[], exps=None, 
-            initial_balance=None, pvs=None):
+            initial_request=None, pvs=None):
         with lock:
             actions = np.array(actions)  # 에이전트의 행동 배열
             # 가치 신경망의 출력 배열
@@ -66,7 +66,7 @@ class Visualizer:
             # 정책 신경망의 출력 배열
             outvals_policy = np.array(outvals_policy)
             # 초기 자본금 배열
-            pvs_base = np.zeros(len(actions)) + initial_balance
+            pvs_base = np.zeros(len(actions)) + initial_request
 
             # 차트 2. 에이전트 상태 (행동, 보유 주식 수)
             for action, color in zip(action_list, self.COLORS):
@@ -97,11 +97,11 @@ class Visualizer:
                 color = 'white'
                 if np.isnan(outval.max()):
                     continue
-                if outval.argmax() == Agent.ACTION_BUY:
-                    color = self.COLORS[0]  # 매수 빨간색
-                elif outval.argmax() == Agent.ACTION_SELL:
-                    color = self.COLORS[1]  # 매도 파란색
-                elif outval.argmax() == Agent.ACTION_HOLD:
+                if outval.argmax() == Agent.ACTION_UP:
+                    color = self.COLORS[0]  # up 빨간색
+                elif outval.argmax() == Agent.ACTION_DOWN:
+                    color = self.COLORS[1]  # down 파란색
+                elif outval.argmax() == Agent.ACTION_STAY:
                     color = self.COLORS[2]  # 관망 초록색
                 self.axes[3].axvline(idx, color=color, alpha=0.1)
             # 정책 신경망의 출력 그리기

@@ -34,9 +34,9 @@ class ContinuousA2CEnv:
     metadata = {'render.modes': ['human']}
 
     def __init__(self, request):
-        self.request = request
         self.max_action =  1.0
         self.observation = []
+        self.request = request
 
         self.action_space = spaces.Box(
             low=-self.max_action,
@@ -45,60 +45,42 @@ class ContinuousA2CEnv:
         )
         
         self.state = None
-        self.seq = []
-        self.seed()
-	
-    def seed(self, seed=None):
-        self.np_random, seed = seeding.np_random(seed)
-        return [seed]
+        
 
     def reset(self, data, n):
-        seq = create_sequences(data, n)
-        self.seq = seq.copy()
-        temp = []
-        for i in range(len(seq[0])):
-            temp.append(seq[0][i] / self.request )
-        self.state = temp.copy()
-        # self.state = self.seq[0]
-        return np.array(self.state, dtype=np.float32)
+        self.request = 2.5
+        self.max_action =  1.0
+        return 
 
-    def step(self, action, dataLen, request, t, n):
+
+    def step(self, action, resource, l):
         
         assert self.action_space.contains(action), "%r (%s) invalid"%(action, type(action))
-        
-        reward = 0
-        done = False
-        currState = []
-        nextState = []
+        curr_request = self.request
 
-        if t + n >= dataLen:
-            currState = self.seq[dataLen-n-1].copy()
-        else:
-            currState = self.seq[t].copy()
+        if curr_request + action < 0:
+            action = 0
 
-        nextState = currState.copy()    
-       
-        for j in range(len(nextState)):
-            currState[j] = currState[j] / request 
-            nextState[j] = (nextState[j] / request) + action[0]
-            
-        if currState[0] > 0.6 : # need to up
-            if nextState[0] > 0.6 : # but down
-                done = True
-            else: #good! up
+        if action > 0 :
+            if (resource/(curr_request + action)) < 0.6:
+                reward = 0
+            else:
+                self.request = curr_request + action
                 reward = 1
-        elif currState[0] < 0.3: #need to down
-            if nextState[0] < 0.3: #but up
-                done = True
-            else: # good! downv
-                if (nextState[1] > 0.3) & (nextState[2] > 0.3):
-                    reward = 1 
-                else:
-                    reward = 0.5
+        elif action < 0 :
+            if (resource/(curr_request + action)) > 0.6:
+                reward = 0
+            else:
+                self.request = curr_request + action
+                reward = 1
+        else:
+            if ((resource/(curr_request)) > 0.3) & ((resource/(curr_request))<0.6):
+                reward = 1
+            else:
+                reward = 0
 
-
-        print("action: ", action, " reward : ", reward, "currState[0] : ", currState[0], "nextState[0]: ", nextState[0])    
-        return np.array(nextState, dtype=np.float32), np.array(currState, dtype=np.float32), reward, request, done
+        print("action: ", action, " | reward : ", reward, " | resource : ", resource, " | curr_request : ", curr_request)    
+        return reward, self.request
 	
 class ContinuousA2C(tf.keras.Model):
     def __init__(self, action_size):
@@ -132,7 +114,6 @@ class ContinuousA2CAgent:
         # 행동의 크기 정의
         self.action_size = action_size
         self.max_action = max_action
-        self.request = request
 	
         # 액터-크리틱 하이퍼파라미터
         self.discount_factor = 0.99 # 0.99
@@ -208,35 +189,41 @@ def plot_reward(score, loss, episode, filename):
 
     plt.savefig(filename+".png")
 
-def create_sequences(data, seq_length):
-    xs = []
-    for i in range(len(data)-seq_length):
-        x = data[i:(i+seq_length)]
-        xs.append(x)
-    np.random.shuffle(xs)
-    return xs
 
+def getState(data, t, n, action, request):
+    # d = t - n + 1
+    block = data[t:t + n - 1] if t < len(data)-n-1 else data[len(data)-n-1:len(data)-1]# pad with t0
+    res = dict({'resource': [], 'reward': []})
+    for i in range(n - 1):
+        res['resource'].append(block[i])
+        if action > 0 :
+            if(block[i] / request) < 0.6:
+                res['reward'].append(-1)
+            else:
+                res['reward'].append(1)
+        elif action < 1:
+            if(block[i] / request) > 0.6:
+                res['reward'].append(-1)
+            else:
+                res['reward'].append(1)
+        else:
+            if((block[i] /request)>0.3) & ((block[i]/request) < 0.6):
+                res['reward'].append(1)
+            else:
+                res['reward'].append(-1)
+    # print("request : ", request, " | resource: ", res['resource'], " | reward : ", res['reward'])
+    return res
 
 def train():
-    name, window_size, episode_count = 'kubernetes_pod_container_portal_20230624', 3, 5000 
+    name, window_size, episode_count = 'kubernetes_pod_container_portal_20230624', 5, 5000 
 
     data = getStockDataVec(name)
     request = 2.5
-
-    # scaler = MinMaxScaler(feature_range=(0, 1))
-    # data = np.reshape(data, [-1, 1])
-    # request = np.reshape(request, [-1, 1])
-    # data = scaler.fit_transform(data)
-    # request = scaler.transform(request)
-    # request = request[0][0]
-    # request = 0.78
     env = ContinuousA2CEnv(request)
     state_size = window_size
     action_size = env.action_space.shape[0]
     max_action = env.action_space.high[0] 
     agent = ContinuousA2CAgent(action_size, max_action, request)
-
-    print("request: ", request, " | action_size: ", action_size, " | max_action: ", max_action)
     l = len(data) - 1
     scores, mean_loss, episodes = [], [], []
     score_avg = 0
@@ -247,26 +234,43 @@ def train():
         score = 0
         loss = 0
         sigma = 0
-        state = env.reset(data, window_size)
-        state = np.reshape(state, [1, state_size])
+        env.reset(data, window_size)
+        state = getState(data, 0, window_size+1, 0, request)
+        state_resource = state['resource']
+        state_reward = state['reward']
+        state_reward = np.reshape(state_reward, [1, window_size])
+        state_resource = np.reshape(state_resource, [1, window_size])
         for t in range(l):
-            action = agent.get_action(state)
-            next_state, state, reward, request, done = env.step(action, l, request, t, window_size)
-            state = np.reshape(state, [1, state_size])
-            next_state = np.reshape(next_state, [1, state_size])
+            action = agent.get_action(state_reward)
+            reward, request = env.step(action, data[t], l)
+            
+            next_state = getState(data, t, window_size + 1, action, request)    
+            next_state_resource = next_state['resource']
+            next_state_reward = next_state['reward']
+            next_state_reward = np.reshape(next_state_reward, [1, window_size])
+            next_state_resource = np.reshape(next_state_resource, [1, window_size])
+
             score += reward
             reward = 0.1 if not done and t != l - 1 else -1
-            loss, sigma = agent.train_model(state, action, reward, next_state, done)
+            print("curr_state : ", state_resource, " | ", state_reward)
+            print("next_state : ", next_state_resource, " | ", next_state_reward)
+            loss, sigma = agent.train_model(state_reward, action, reward, next_state_reward, done)
+                        
+            state = next_state
+
+            state_resource = state['resource']
+            state_reward = state['reward']
+            state_reward = np.reshape(state_reward, [1, window_size])
+            state_resource = np.reshape(state_resource, [1, window_size])
+
             loss_list.append(loss)
             sigma_list.append(sigma)
-            # state = next_state
         score_avg = 0.9 * score_avg + 0.1 * score if score_avg != 0 else score
         print("episode: {:3d} | score avg: {:3.2f} | loss: {:.3f} | sigma: {:.3f}".format(e, score_avg, np.mean(loss_list), np.mean(sigma)))
         print("==============================done==============================")
         scores.append(score_avg)
         mean_loss.append(np.mean(loss_list))
         episodes.append(e)
-        # plot_reward(scores,mean_loss, episodes, "score_"+str(e))	
         if e % 100 == 0:
             agent.model.save("./working/model_ep" + str(e))
             plot_reward(scores,mean_loss, episodes, "score_"+str(e))

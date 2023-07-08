@@ -4,11 +4,11 @@ import platform
 
 
 # 로거 이름
-LOGGER_NAME = 'rltrader'
+LOGGER_NAME = 'resourceScaler'
 
 
 # 경로 설정
-BASE_DIR = os.environ.get('RLTRADER_BASE', 
+BASE_DIR = os.environ.get('RS_BASE', 
     os.path.abspath(os.path.join(__file__, os.path.pardir, os.path.pardir, os.path.pardir, os.path.pardir)))
 
 

@@ -1,8 +1,8 @@
 class Environment:
-    PRICE_IDX = 4  # 종가의 위치
+    RESOURCE_IDX = 3  # resource 위치
 
-    def __init__(self, chart_data=None):
-        self.chart_data = chart_data
+    def __init__(self, resource_data=None):
+        self.resource_data = resource_data
         self.observation = None
         self.idx = -1
 
@@ -11,13 +11,13 @@ class Environment:
         self.idx = -1
 
     def observe(self):
-        if len(self.chart_data) > self.idx + 1:
+        if len(self.resource_data) > self.idx + 1:
             self.idx += 1
-            self.observation = self.chart_data.iloc[self.idx]
+            self.observation = self.resource_data[self.idx]
             return self.observation
         return None
 
-    def get_price(self):
+    def get_resource(self):
         if self.observation is not None:
-            return self.observation[self.PRICE_IDX]
+            return self.observation
         return None

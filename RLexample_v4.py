@@ -1,200 +1,219 @@
-# This Python 3 environment comes with many helpful analytics libraries installed
-# It is defined by the kaggle/python docker image: https://github.com/kaggle/docker-python
-# For example, here's several helpful packages to load in 
-
 import numpy as np # linear algebra
 import pandas as pd # data processing, CSV file I/O (e.g. pd.read_csv)
 import math
 from tqdm import tqdm
 import matplotlib.pyplot as plt
-# Input data files are available in the "../input/" directory.
-# For example, running this (by clicking run or pressing Shift+Enter) will list the files in the input directory
-
 import os
 print(os.listdir("./input"))
 print(os.listdir("./working"))
-# Any results you write to the current directory are saved as output.
 
 import keras
 from keras.models import Sequential
 from keras.models import load_model
 from keras.layers import Dense
 from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.initializers import RandomUniform
 import random
 from collections import deque
+import tensorflow as tf
+
+
+class DQN(tf.keras.Model):
+    def __init__(self, action_size):
+        super(DQN, self).__init__()
+        self.fc1 = Dense(24, activation='relu')
+        self.fc2 = Dense(24, activation='relu')
+        self.fc_out = Dense(action_size,
+                            kernel_initializer=RandomUniform(-1e-3, 1e-3))
+
+    def call(self, x):
+        x = self.fc1(x)
+        x = self.fc2(x)
+        q = self.fc_out(x)
+        return q
+
+
+# class A2C(tf.keras.Model):
+#     def __init__(self, action_size):
+#         super(A2C, self).__init__()
+#         self.actor_fc = Dense(24, activation='tanh')
+#         self.actor_out = Dense(action_size, activation='softmax',
+#                                kernel_initializer=RandomUniform(-1e-3, 1e-3))
+#         self.critic_fc1 = Dense(24, activation='tanh')
+#         self.critic_fc2 = Dense(24, activation='tanh')
+#         self.critic_out = Dense(1,
+#                                 kernel_initializer=RandomUniform(-1e-3, 1e-3))
+
+#     def call(self, x):
+#         actor_x = self.actor_fc(x)
+#         policy = self.actor_out(actor_x)
+
+#         critic_x = self.critic_fc1(x)
+#         critic_x = self.critic_fc2(critic_x)
+#         value = self.critic_out(critic_x)
+#         return policy, value
+
 
 class Agent:
     def __init__(self, state_size, is_eval=False, model_name=""):
         self.state_size = state_size # normalized previous days
         self.action_size = 3 # stay, watching, up, down
         self.memory = deque(maxlen=1000)
-        self.metric = []
-        self.scale_size = 0
-        self.request = 3.0
-        self.num_steps = 1
-        self.num_features = state_size
+        self.request = 2.5
+        self.num_up = 0  # upscaling 횟수
+        self.num_down = 0  # downscaling 횟수
+        self.num_stay = 0  # stay 횟수
+        self.num_scaling = 1 
+        self.num_recent_stay = 0
+        self.upper_bound = 0.7
+        self.lower_bound = 0.3
 
-        self.seq = []
-        self.watching_count = 0
-        self.model_name = model_name
+        self.batch_size = 36
+        self.train_start = 1000
         self.is_eval = is_eval
-        self.net == 'dnn'
-        self.value_network = self.init_value_network()
-        self.policy_network = self.init_policy_network()
-        self.value_network_path = None
-        self.policy_network_path = None
 
-        self.discount_factor = 0.9
+        self.discount_factor = 0.99
+        self.learning_rate = 0.001
         self.epsilon = 1.0
-        self.lr = 0.0005
-        self.epsilon_decay = 0.995
-
-        self.model = load_model("./working/" + model_name) if is_eval else self._model()
-
-    def reset(self, data, t, n):
-        seq = create_sequences(data, n)
-        self.seq = seq
-        self.state = seq[0]
-        self.metric = []
-        self.scale_size = 0
-        self.request = 3.0
-        return np.array(self.state, dtype=np.float32)
-        
-    def decide_action(self, pred_value, pred_policy, epsilon):
+        self.epsilon_decay = 0.999
+        self.epsilon_min = 0.01
        
-        pred = pred_policy
-        if pred is None:
-            pred = pred_value
+        # 리플레이 메모리, 최대 크기 2000
+        self.memory = deque(maxlen=2000)
 
-        if pred is None:
-            # 예측 값이 없을 경우 탐험
-            epsilon = 1
+        # 모델과 타깃 모델 생성
+        self.model = DQN(self.action_size)
+        self.model.load_weights("./working/model_ep600")
+        # self.target_model = DQN(self.action_size)
+        # self.optimizer = Adam(lr=self.learning_rate)
+
+        # 타깃 모델 초기화
+        # self.update_target_model()
+
+    # 타깃 모델을 모델의 가중치로 업데이트
+    def update_target_model(self):
+        self.target_model.set_weights(self.model.get_weights())
+
+
+    def reset(self):
+        self.num_up = 0
+        self.num_down = 0
+        self.num_stay = 1
+        self.num_recent_stay = 0
+        self.request = 2.5
+        return 
+        
+    def append_sample(self, state, action, reward, next_state, done):
+        self.memory.append((state, action, reward, next_state, done))
+
+    def decide_action_test(self, state):
+        q_value = self.model(state)
+        action = np.argmax(q_value[0])
+        return action, sigmoid(q_value[0][action])
+
+    def decide_action(self, state):
+        if np.random.rand() <= self.epsilon:
+            return random.randrange(self.action_size), 0.5
         else:
-            # 값이 모두 같은 경우 탐험
-            maxpred = np.max(pred)
-            if (pred == maxpred).all():
-                epsilon = 1
+            q_value = self.model(state)
+            action = np.argmax(q_value[0])
+            return action, sigmoid(q_value[0][action])
+        
+    def decide_scaling_unit(self, data, confidence):
+        if np.isnan(confidence):
+            return (1 - (data / self.request))    
+        scaling_unit = max(((data / self.request)-1) * confidence , (1 - (data / self.request))* confidence)
+        return max(round(float(scaling_unit),3), 0)
 
-        # 탐험 결정
-        if np.random.rand() < epsilon:
-            exploration = True
-            action = np.random.randint(self.action_size)
-        else:
-            exploration = False
-            action = np.argmax(pred)
 
-        return action
-		
-    def act(self, action, request, t, n):
+    def act(self, action, resource, l, confidence):
+        curr_request = self.request
+        scaling_unit = self.decide_scaling_unit(resource, confidence)
+        if action == 1:
+            if curr_request - scaling_unit < 0:
+                action = 2
+
+        usage = resource/curr_request
+
         reward = 0
-        dataLen = len(data)
+        # upscaling
+        if action == 0:
+            # up할 단위를 판단
+            self.num_scaling += 1 # scaling 횟수 증가
+            self.num_up += 1 # upscaling 횟수 증가
 
-        if t + n >= dataLen:
-            seq = self.seq[dataLen-n-1]
-            next_seq = self.seq[dataLen-n-1]
-        else:
-            seq = self.seq[t]
-            next_seq = self.seq[t+1]
-
-        for i in range(len(seq)):
-            tempList.append(seq[i] - request)
+            if (usage) < 1:
+                reward = -1
+            else:
+                self.request = curr_request + scaling_unit
+                reward = 1
+            print("[UP] reward : ", reward, " || request : ", self.request, " || resource : ", resource, " || usage : ", usage)
+        
+                        
+        # downscaling
+        elif action == 1:
+            # donw할 단위를 판단
+            self.num_scaling += 1
+            self.num_down = self.num_down + 1
             
-        if action == 0: #down
-            if tempList[0] > 0:
-                reward = -0.5
-        elif action == 1: # up
-            if tempList[0] > 0:
+            if (usage) > 1:
+                reward = -1
+            else:
+                self.request = curr_request - scaling_unit
+                reward = 1
+            print("[DOWN] reward : ", reward, " || request : ", self.request, " || resource : ", resource, " || usage : ", usage)
+            
+        # 관망
+        else:
+            self.num_scaling += 1
+            self.num_stay += 1  # 관망 횟수 증가
+            if ((usage) >= 0.3) & ((usage) <= 1):
                 reward = 1
             else:
                 reward = -1
-        elif action == 2: # stay or watching
-            if tempList[0] < 0:
-                if (tempList[1] < 0) & (tempList[2] < 0)& (tempList[2] < 0) :
-                    reward = 1
+            print("[STAY] reward : ", reward, " || request : ", self.request, " || resource : ", resource, " || usage : ", usage)
 
-        return reward, next_seq			
+        
+        return reward, self.request
 			
-    def get_batch(self):
-            memory = self.memory
-            x = np.zeros((len(self.memory), self.num_steps, self.num_features))
-            y_value = np.zeros((len(self.memory), self.action_size))
-            value_max_next = 0
-            for i, (sample, next_sample, action, reward) in enumerate(memory):
-                x[i] = sample
-                r = self.memory[-1] - reward
-                y_value[i] = value
-                y_value[i, action] = r + self.discount_factor * value_max_next
-                value_max_next = value.max()
-            return x, y_value, None
+    def train_model(self):
+        if self.epsilon > self.epsilon_min:
+            self.epsilon *= self.epsilon_decay
 
-    def fit(self):
-        # 배치 학습 데이터 생성
-        x, y_value, y_policy = self.get_batch()
-        # 손실 초기화
-        self.loss = None
-        if len(x) > 0:
-            loss = 0
-            if y_value is not None:
-                # 가치 신경망 갱신
-                loss += self.value_network.train_on_batch(x, y_value)
-            if y_policy is not None:
-                # 정책 신경망 갱신
-                loss += self.policy_network.train_on_batch(x, y_policy)
-            self.loss = loss
+        # 메모리에서 배치 크기만큼 무작위로 샘플 추출
+        mini_batch = random.sample(self.memory, self.batch_size)
+
+        states = np.array([sample[0][0] for sample in mini_batch])
+        actions = np.array([sample[1] for sample in mini_batch])
+        rewards = np.array([sample[2] for sample in mini_batch])
+        next_states = np.array([sample[3][0] for sample in mini_batch])
+        dones = np.array([sample[4] for sample in mini_batch])
+
+        # 학습 파라메터
+        model_params = self.model.trainable_variables
+        with tf.GradientTape() as tape:
+            # 현재 상태에 대한 모델의 큐함수
+            predicts = self.model(states)
+            one_hot_action = tf.one_hot(actions, self.action_size)
+            predicts = tf.reduce_sum(one_hot_action * predicts, axis=1)
+
+            # 다음 상태에 대한 타깃 모델의 큐함수
+            target_predicts = self.target_model(next_states)
+            target_predicts = tf.stop_gradient(target_predicts)
+
+            # 벨만 최적 방정식을 이용한 업데이트 타깃
+            max_q = np.amax(target_predicts, axis=-1)
+            targets = rewards + (1 - dones) * self.discount_factor * max_q
+            loss = tf.reduce_mean(tf.square(targets - predicts))
+
+        # 오류함수를 줄이는 방향으로 모델 업데이트
+        grads = tape.gradient(loss, model_params)
+        self.optimizer.apply_gradients(zip(grads, model_params))
+        return loss
             
 
-    def init_value_network(self, shared_network=None, activation='linear', loss='mse'):
-        if self.net == 'dnn':
-            self.value_network = DNN(
-                input_dim=self.num_features, 
-                output_dim=self.agent.action_size, 
-                lr=self.lr, shared_network=shared_network,
-                activation=activation, loss=loss)
-        elif self.net == 'lstm':
-            self.value_network = LSTMNetwork(
-                input_dim=self.num_features, 
-                output_dim=self.agent.action_size, 
-                lr=self.lr, num_steps=self.num_steps, 
-                shared_network=shared_network,
-                activation=activation, loss=loss)
-        elif self.net == 'cnn':
-            self.value_network = CNN(
-                input_dim=self.num_features, 
-                output_dim=self.agent.action_size, 
-                lr=self.lr, num_steps=self.num_steps, 
-                shared_network=shared_network,
-                activation=activation, loss=loss)
-        if os.path.exists(self.value_network_path):
-            self.value_network.load_model(model_path=self.value_network_path)
-
-    def init_policy_network(self, shared_network=None, activation='sigmoid', 
-                            loss='binary_crossentropy'):
-        if self.net == 'dnn':
-            self.policy_network = DNN(
-                input_dim=self.num_features, 
-                output_dim=self.agent.action_size, 
-                lr=self.lr, shared_network=shared_network,
-                activation=activation, loss=loss)
-        elif self.net == 'lstm':
-            self.policy_network = LSTMNetwork(
-                input_dim=self.num_features, 
-                output_dim=self.agent.action_size, 
-                lr=self.lr, num_steps=self.num_steps, 
-                shared_network=shared_network,
-                activation=activation, loss=loss)
-        elif self.net == 'cnn':
-            self.policy_network = CNN(
-                input_dim=self.num_features, 
-                output_dim=self.agent.action_size, 
-                lr=self.lr, num_steps=self.num_steps, 
-                shared_network=shared_network,
-                activation=activation, loss=loss)
-        if os.path.exists(self.policy_network_path):
-            self.policy_network.load_model(model_path=self.policy_network_path)
-
-
 # returns the vector containing stock data from a fixed file
-def getStockDataVec(key):
+def getResourceDataVec(key):
 	vec = []
 	lines = open("./input/"+key+".csv", "r").read().splitlines()
 
@@ -203,26 +222,10 @@ def getStockDataVec(key):
 
 	return vec
 
-def getRequestDataVec(key):
-	vec = []
-	lines = open("./input/"+key+".csv", "r").read().splitlines()
-
-	for line in lines[1:]:
-		vec.append(round(float(line.split(",")[2]), 2))
-
-	return vec
 
 # returns the sigmoid
 def sigmoid(x):
 	return 1 / (1 + math.exp(-x))
-
-
-def plot_reward(total_rewards, filename):
-    plt.figure(figsize=(10,6)) 
-    plt.plot(total_rewards, label='reward') 
-    plt.title('total_rewards')
-    plt.legend()
-    plt.savefig(filename+".png") 
 
 def create_sequences(data, seq_length):
     xs = []
@@ -232,40 +235,169 @@ def create_sequences(data, seq_length):
     # random.shuffle(xs)    
     return np.array(xs)
 
+def plot_reward(score, loss, episode, filename):
+    plt.subplot(2, 1, 1)  
+    plt.plot(episode, score, 'b')
+    plt.xlabel("episode")
+    plt.title('score')
+    plt.ylabel('average score')
+
+    plt.subplot(2, 1, 2) 
+    plt.plot(episode, loss, 'b')
+    plt.xlabel("episode")
+    plt.title('loss')
+    plt.ylabel('average loss')
+
+    plt.savefig(filename+".png")
+
+
+def getState(data, t, n, request):
+    # d = t - n + 1
+    block = data[t:t + n - 1] if t < len(data)-n-1 else data[len(data)-n-1:len(data)-1]# pad with t0
+    res = dict({'resource': [], 'reward': []})
+    for i in range(n - 1):
+        res['resource'].append(block[i])
+        if (block[i] / request) > 1:
+            res['reward'].append(1) # down
+        elif((block[i] /request)>=0.3) & ((block[i]/request) <= 1):
+            res['reward'].append(2) #stay
+        else:
+            res['reward'].append(0) #up
+    # print("request : ", request, " | resource: ", res['resource'], " | reward : ", res['reward'])
+    return res
+
+
 def train():
-    stock_name, window_size, episode_count = 'kubernetes_pod_container_portal_20230624', 4, 5000
+    
+    data, window_size, episode_count = 'kubernetes_pod_container_portal_20230624', 4, 1000
 
     agent = Agent(window_size)
-    data = getStockDataVec(stock_name)
+    data = getResourceDataVec(data)
     l = len(data) - 1
-    start_epsilon = 1
+    episodes = []
     total_rewards = []
+    total_losses = []
     for e in range(episode_count + 1):
-        print("Episode " + str(e) + "/" + str(episode_count))
-        sample = agent.reset(data, 0, window_size + 1)
         total_reward = 0
-        epsilon = start_epsilon * (1 - (e / (episode_count)))
+        mean_loss = []
+        print("Episode " + str(e) + "/" + str(episode_count))
+        request = agent.request
+        done = False
+        state = getState(data, 0, window_size + 1, request)
+        state_resource = state['resource']
+        state_reward = state['reward']
+        state_reward = np.reshape(state_reward, [1, window_size])
+        state_resource = np.reshape(state_resource, [1, window_size])
+        agent.reset()
+        loss = 0
         for t in range(l):
+            action, confidence = agent.decide_action(state_reward)
+                    
+            reward, request = agent.act(action, state_resource[0][0], l, confidence)
+            
+            next_state = getState(data, t, window_size + 1, request)    
+            next_state_resource = next_state['resource']
+            next_state_reward = next_state['reward']
+            next_state_reward = np.reshape(next_state_reward, [1, window_size])
+            next_state_resource = np.reshape(next_state_resource, [1, window_size])
 
-            pred_value = None
-            pred_policy = None
+            # print("state_resource : ", state_resource, " | state_reward : ", state_reward)
+            # print("next_state_resource : ", next_state_resource, " | next_state_reward : ", next_state_reward)
+            # done = True if t == l-1 else False
             
-            pred_value = self.value_network.predict(sample)
-            pred_policy = self.policy_network.predict(sample)
+            temp_reward = 0.1 if reward > 0 else -1
+            done = True if reward < 0 else False
             
-            action = agent.decide_action(pred_value, pred_policy, epsilon)
-            reward, next_sample = agent.act(action, request, t, window_size)
-            # done = True if t == l - 1 else False
-            agent.memory.append((sample, next_sample, action, reward))
-            sample = next_sample
-            total_reward += reward
-        
-        self.fit()
-        total_rewards.append(total_reward)    
-        if e % 10 == 0:
+            # loss = agent.train_model(state_reward, action, temp_reward, next_state_reward, done)
+
+            # 리플레이 메모리에 샘플 <s, a, r, s'> 저장
+            agent.append_sample(state_reward, action, temp_reward, next_state_reward, done)
+            # 매 타임스텝마다 학습
+            if len(agent.memory) >= agent.train_start:
+                loss = agent.train_model()
+
+            mean_loss.append(loss)
+            temp_reward = reward if reward > 0 else 0
+            total_reward += temp_reward
+            state = next_state
+
+            state_resource = state['resource']
+            state_reward = state['reward']
+            state_reward = np.reshape(state_reward, [1, window_size])
+            state_resource = np.reshape(state_resource, [1, window_size])
+
+            if t == l-1:
+                agent.update_target_model()
+                total_rewards.append(total_reward)
+                total_losses.append(np.mean(mean_loss))
+                episodes.append(e)
+                print("---------------------------------------------------------------------------------------------------------------------------------------------------------------------------")
+                print("Total rewards: ", total_reward, " || Mean loss: ", np.mean(mean_loss), " || last request :", agent.request, " || num_up : ", agent.num_up, " || num_down: ", agent.num_down, " || num_stay : ", agent.num_stay)
+                print("---------------------------------------------------------------------------------------------------------------------------------------------------------------------------")
+
+
+        if (e % 100 == 0) & (e != 0):
             agent.model.save("./working/model_ep" + str(e))
-            plot_reward(total_rewards, "reward_"+str(e))
-    return total_rewards
-		      
+            plot_reward(total_rewards, total_losses, episodes, "score_"+str(e))
 
-train()
+def test():
+    
+    data, window_size, episode_count = 'kubernetes_pod_container_portal_20230624', 4, 10
+
+    agent = Agent(window_size)
+    data = getResourceDataVec(data)
+    l = len(data) - 1
+    episodes = []
+    total_rewards = []
+    total_losses = []
+    for e in range(episode_count + 1):
+        total_reward = 0
+        mean_loss = []
+        print("Episode " + str(e) + "/" + str(episode_count))
+        request = agent.request
+        done = False
+        state = getState(data, 0, window_size + 1, request)
+        state_resource = state['resource']
+        state_reward = state['reward']
+        state_reward = np.reshape(state_reward, [1, window_size])
+        state_resource = np.reshape(state_resource, [1, window_size])
+        agent.reset()
+        loss = 0
+        for t in range(l):
+            action, confidence = agent.decide_action_test(state_reward)
+                    
+            reward, request = agent.act(action, state_resource[0][0], l, confidence)
+            
+            next_state = getState(data, t, window_size + 1, request)    
+            next_state_resource = next_state['resource']
+            next_state_reward = next_state['reward']
+            next_state_reward = np.reshape(next_state_reward, [1, window_size])
+            next_state_resource = np.reshape(next_state_resource, [1, window_size])
+            
+            temp_reward = 0.1 if reward > 0 else -1
+            done = True if reward < 0 else False
+            
+            temp_reward = reward if reward > 0 else 0
+            total_reward += temp_reward
+            state = next_state
+
+            state_resource = state['resource']
+            state_reward = state['reward']
+            state_reward = np.reshape(state_reward, [1, window_size])
+            state_resource = np.reshape(state_resource, [1, window_size])
+
+            if t == l-1:
+                # agent.update_target_model()
+                total_rewards.append(total_reward)
+                total_losses.append(np.mean(mean_loss))
+                episodes.append(e)
+                print("---------------------------------------------------------------------------------------------------------------------------------------------------------------------------")
+                print("Total rewards: ", total_reward, " || Mean loss: ", np.mean(mean_loss), " || last request :", agent.request, " || num_up : ", agent.num_up, " || num_down: ", agent.num_down, " || num_stay : ", agent.num_stay)
+                print("---------------------------------------------------------------------------------------------------------------------------------------------------------------------------")
+
+
+        if (e % 100 == 0) & (e != 0):
+            agent.model.save("./working/model_ep" + str(e))
+            plot_reward(total_rewards, total_losses, episodes, "score_"+str(e))
+
+test()

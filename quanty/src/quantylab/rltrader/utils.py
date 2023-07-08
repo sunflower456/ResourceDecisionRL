@@ -2,6 +2,8 @@ import time
 import datetime
 import numpy as np
 
+from sklearn.preprocessing import RobustScaler
+from joblib import dump, load
 
 # 날짜, 시간 관련 문자열 형식
 FORMAT_DATE = "%Y%m%d"
@@ -23,3 +25,14 @@ def get_time_str():
 def sigmoid(x):
     x = max(min(x, 10), -10)
     return 1. / (1. + np.exp(-x))
+
+def getDataVec(key):
+    vec = []
+    lines = open("./input/"+key+".csv", "r").read().splitlines()
+    
+    for line in lines[1:]:
+        vec.append(round(float(line.split(",")[3]) / 10000000, 2))
+    vec = np.reshape(vec, (-1,1))
+    # scaler = RobustScaler()
+    # vec = scaler.fit_transform(np.reshape(vec, (-1,1)))
+    return vec
