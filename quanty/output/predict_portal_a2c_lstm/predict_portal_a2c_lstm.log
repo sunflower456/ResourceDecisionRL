@@ -1,1 +1,0 @@
-{"mode": "predict", "ver": "v3", "name": "portal", "resource_code": ["kubernetes_pod_container_portal_20230624"], "rl_method": "a2c", "net": "lstm", "backend": "tensorflow", "lr": 0.001, "discount_factor": 0.7, "request": 2.5}

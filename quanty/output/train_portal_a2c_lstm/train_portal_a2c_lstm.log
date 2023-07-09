@@ -1,9 +1,0 @@
-{"mode": "train", "ver": "v3", "name": "portal", "resource_code": ["kubernetes_pod_container_portal_20230624"], "rl_method": "a2c", "net": "lstm", "backend": "tensorflow", "lr": 0.001, "discount_factor": 0.7, "request": 2.5}
-RL:a2c NET:lstm LR:0.001 DF:0.7 
-[Epoch 001/100] Epsilon:1.0000 #Expl.:248/248 #up:87 #down:78 #stay:84 Reward:41 Loss:7.983828 ET:16.9516
-[Epoch 002/100] Epsilon:0.9899 #Expl.:245/248 #up:86 #down:71 #stay:92 Reward:34 Loss:7.710427 ET:9.3554
-[Epoch 003/100] Epsilon:0.9798 #Expl.:240/248 #up:86 #down:81 #stay:82 Reward:43 Loss:8.033532 ET:8.8611
-[Epoch 004/100] Epsilon:0.9697 #Expl.:240/248 #up:91 #down:80 #stay:78 Reward:43 Loss:8.000906 ET:8.9144
-[Epoch 005/100] Epsilon:0.9596 #Expl.:239/248 #up:80 #down:92 #stay:77 Reward:45 Loss:7.986824 ET:8.7898
-[Epoch 006/100] Epsilon:0.9495 #Expl.:234/248 #up:81 #down:77 #stay:91 Reward:40 Loss:7.650711 ET:8.9095
-[Epoch 007/100] Epsilon:0.9394 #Expl.:233/248 #up:94 #down:74 #stay:81 Reward:49 Loss:7.921151 ET:8.8574
