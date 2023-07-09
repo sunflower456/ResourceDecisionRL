@@ -32,40 +32,17 @@ class DQN(tf.keras.Model):
         q = self.fc_out(x)
         return q
 
-
-# class A2C(tf.keras.Model):
-#     def __init__(self, action_size):
-#         super(A2C, self).__init__()
-#         self.actor_fc = Dense(24, activation='tanh')
-#         self.actor_out = Dense(action_size, activation='softmax',
-#                                kernel_initializer=RandomUniform(-1e-3, 1e-3))
-#         self.critic_fc1 = Dense(24, activation='tanh')
-#         self.critic_fc2 = Dense(24, activation='tanh')
-#         self.critic_out = Dense(1,
-#                                 kernel_initializer=RandomUniform(-1e-3, 1e-3))
-
-#     def call(self, x):
-#         actor_x = self.actor_fc(x)
-#         policy = self.actor_out(actor_x)
-
-#         critic_x = self.critic_fc1(x)
-#         critic_x = self.critic_fc2(critic_x)
-#         value = self.critic_out(critic_x)
-#         return policy, value
-
-
 class Agent:
     def __init__(self, state_size, is_eval=False, model_name=""):
         self.state_size = state_size # normalized previous days
         self.action_size = 3 # stay, watching, up, down
         self.memory = deque(maxlen=1000)
-        self.request = 2.5
+        self.request = 1.2
         self.num_up = 0  # upscaling 횟수
         self.num_down = 0  # downscaling 횟수
         self.num_stay = 0  # stay 횟수
         self.num_scaling = 1 
-        self.num_recent_stay = 0
-        self.upper_bound = 0.7
+        self.upper_bound = 1.0
         self.lower_bound = 0.3
 
         self.batch_size = 36
@@ -83,12 +60,12 @@ class Agent:
 
         # 모델과 타깃 모델 생성
         self.model = DQN(self.action_size)
-        self.model.load_weights("./working/model_ep600")
-        # self.target_model = DQN(self.action_size)
-        # self.optimizer = Adam(lr=self.learning_rate)
+        # self.model.load_weights("./working/model_ep1000")
+        self.target_model = DQN(self.action_size)
+        self.optimizer = Adam(lr=self.learning_rate)
 
         # 타깃 모델 초기화
-        # self.update_target_model()
+        self.update_target_model()
 
     # 타깃 모델을 모델의 가중치로 업데이트
     def update_target_model(self):
@@ -99,8 +76,7 @@ class Agent:
         self.num_up = 0
         self.num_down = 0
         self.num_stay = 1
-        self.num_recent_stay = 0
-        self.request = 2.5
+        self.request = 1.2
         return 
         
     def append_sample(self, state, action, reward, next_state, done):
@@ -119,35 +95,53 @@ class Agent:
             action = np.argmax(q_value[0])
             return action, sigmoid(q_value[0][action])
         
-    def decide_scaling_unit(self, data, confidence):
-        if np.isnan(confidence):
-            return (1 - (data / self.request))    
-        scaling_unit = max(((data / self.request)-1) * confidence , (1 - (data / self.request))* confidence)
-        return max(round(float(scaling_unit),3), 0)
+    def decide_scaling_unit(self, request, resourceList, action, confidence):
+        scaling_unit = 0.
+        if action == 0: # upscaling
+            tempList = []
+            for i in range(len(resourceList)-1):
+                tag = True if resourceList[i]/request >= self.upper_bound else False
+                if tag == False:
+                    break
+                else:
+                    tempList.append(abs(request - resourceList[i]))
+            if not tempList:
+                scaling_unit = 0.
+            else:
+                scaling_unit = np.mean(tempList)
+
+        elif action == 1: #downscaling
+            tempList = []
+            for i in range(len(resourceList)-1):
+                tag = True if resourceList[i]/request < self.upper_bound else False
+                if tag == False:
+                    break
+                else:
+                    tempList.append(abs(request - resourceList[i]))
+            if not tempList:
+                scaling_unit = 0.
+            else:
+                scaling_unit = np.mean(tempList)
+        # print("request: ", request, " | scaling_unit : ", scaling_unit, " | resourceList: ", resourceList)
+        return round(float(scaling_unit),3)
 
 
-    def act(self, action, resource, l, confidence):
+    def act(self, action, resource, resourceList, l, confidence):
         curr_request = self.request
-        scaling_unit = self.decide_scaling_unit(resource, confidence)
-        if action == 1:
-            if curr_request - scaling_unit < 0:
-                action = 2
-
+        scaling_unit = self.decide_scaling_unit(curr_request, resourceList[0], action, confidence)
         usage = resource/curr_request
-
         reward = 0
         # upscaling
         if action == 0:
             # up할 단위를 판단
             self.num_scaling += 1 # scaling 횟수 증가
             self.num_up += 1 # upscaling 횟수 증가
-
-            if (usage) < 1:
+            if (usage) < self.upper_bound:
                 reward = -1
             else:
                 self.request = curr_request + scaling_unit
                 reward = 1
-            print("[UP] reward : ", reward, " || request : ", self.request, " || resource : ", resource, " || usage : ", usage)
+            # print("[UP] reward : ", reward, " || request : ", self.request, " || resource : ", resource, " || usage : ", usage, " || scale : ", scaling_unit)
         
                         
         # downscaling
@@ -155,23 +149,23 @@ class Agent:
             # donw할 단위를 판단
             self.num_scaling += 1
             self.num_down = self.num_down + 1
-            
-            if (usage) > 1:
+
+            if (usage) > self.upper_bound:
                 reward = -1
             else:
                 self.request = curr_request - scaling_unit
                 reward = 1
-            print("[DOWN] reward : ", reward, " || request : ", self.request, " || resource : ", resource, " || usage : ", usage)
+            # print("[DOWN] reward : ", reward, " || request : ", self.request, " || resource : ", resource, " || usage : ", usage, " || scale : ", scaling_unit)
             
         # 관망
         else:
             self.num_scaling += 1
             self.num_stay += 1  # 관망 횟수 증가
-            if ((usage) >= 0.3) & ((usage) <= 1):
-                reward = 1
+            if ((usage) >= self.lower_bound) & ((usage) <= self.upper_bound):
+                reward = 1 # 1 -> 1.5
             else:
                 reward = -1
-            print("[STAY] reward : ", reward, " || request : ", self.request, " || resource : ", resource, " || usage : ", usage)
+            # print("[STAY] reward : ", reward, " || request : ", self.request, " || resource : ", resource, " || usage : ", usage)
 
         
         return reward, self.request
@@ -252,24 +246,18 @@ def plot_reward(score, loss, episode, filename):
 
 
 def getState(data, t, n, request):
-    # d = t - n + 1
-    block = data[t:t + n - 1] if t < len(data)-n-1 else data[len(data)-n-1:len(data)-1]# pad with t0
-    res = dict({'resource': [], 'reward': []})
+    block = data[t:t + n] if t < len(data)-n-1 else data[len(data)-n-1:len(data)]
+    state = []
+    resource = []
     for i in range(n - 1):
-        res['resource'].append(block[i])
-        if (block[i] / request) > 1:
-            res['reward'].append(1) # down
-        elif((block[i] /request)>=0.3) & ((block[i]/request) <= 1):
-            res['reward'].append(2) #stay
-        else:
-            res['reward'].append(0) #up
-    # print("request : ", request, " | resource: ", res['resource'], " | reward : ", res['reward'])
-    return res
+        state.append(sigmoid(block[i]/request))
+        resource.append(block[i])
+    return np.array([state]), np.array([resource])
 
 
 def train():
     
-    data, window_size, episode_count = 'kubernetes_pod_container_portal_20230624', 4, 1000
+    data, window_size, episode_count = 'kubernetes_pod_container_account_20230531', 6, 1000 # 25
 
     agent = Agent(window_size)
     data = getResourceDataVec(data)
@@ -283,50 +271,33 @@ def train():
         print("Episode " + str(e) + "/" + str(episode_count))
         request = agent.request
         done = False
-        state = getState(data, 0, window_size + 1, request)
-        state_resource = state['resource']
-        state_reward = state['reward']
-        state_reward = np.reshape(state_reward, [1, window_size])
-        state_resource = np.reshape(state_resource, [1, window_size])
+        state, resource = getState(data, 0, window_size+1, request)
         agent.reset()
         loss = 0
         for t in range(l):
-            action, confidence = agent.decide_action(state_reward)
+            action, confidence = agent.decide_action(state)
                     
-            reward, request = agent.act(action, state_resource[0][0], l, confidence)
+            reward, request = agent.act(action, data[t], resource, l, confidence)
             
-            next_state = getState(data, t, window_size + 1, request)    
-            next_state_resource = next_state['resource']
-            next_state_reward = next_state['reward']
-            next_state_reward = np.reshape(next_state_reward, [1, window_size])
-            next_state_resource = np.reshape(next_state_resource, [1, window_size])
-
-            # print("state_resource : ", state_resource, " | state_reward : ", state_reward)
-            # print("next_state_resource : ", next_state_resource, " | next_state_reward : ", next_state_reward)
-            # done = True if t == l-1 else False
+            next_state, next_resource = getState(data, t+1, window_size+1, request)    
             
-            temp_reward = 0.1 if reward > 0 else -1
             done = True if reward < 0 else False
-            
+            temp_reward = 0.1 if reward > 0 else -1
             # loss = agent.train_model(state_reward, action, temp_reward, next_state_reward, done)
 
-            # 리플레이 메모리에 샘플 <s, a, r, s'> 저장
-            agent.append_sample(state_reward, action, temp_reward, next_state_reward, done)
-            # 매 타임스텝마다 학습
+            agent.append_sample(state, action, temp_reward, next_state, done)
+
             if len(agent.memory) >= agent.train_start:
                 loss = agent.train_model()
+                if loss > 1:
+                    print("[",t,"] loss : ", loss)
 
             mean_loss.append(loss)
-            temp_reward = reward if reward > 0 else 0
-            total_reward += temp_reward
+            total_reward += reward
             state = next_state
-
-            state_resource = state['resource']
-            state_reward = state['reward']
-            state_reward = np.reshape(state_reward, [1, window_size])
-            state_resource = np.reshape(state_resource, [1, window_size])
-
-            if t == l-1:
+            resource = next_resource
+            
+            if t == l-1-window_size:
                 agent.update_target_model()
                 total_rewards.append(total_reward)
                 total_losses.append(np.mean(mean_loss))
@@ -342,62 +313,46 @@ def train():
 
 def test():
     
-    data, window_size, episode_count = 'kubernetes_pod_container_portal_20230624', 4, 10
+    data, window_size, episode_count = 'kubernetes_pod_container_account_test', 4, 10
 
     agent = Agent(window_size)
     data = getResourceDataVec(data)
     l = len(data) - 1
     episodes = []
     total_rewards = []
-    total_losses = []
     for e in range(episode_count + 1):
         total_reward = 0
         mean_loss = []
         print("Episode " + str(e) + "/" + str(episode_count))
         request = agent.request
         done = False
-        state = getState(data, 0, window_size + 1, request)
-        state_resource = state['resource']
-        state_reward = state['reward']
-        state_reward = np.reshape(state_reward, [1, window_size])
-        state_resource = np.reshape(state_resource, [1, window_size])
+        state, resource = getState(data, 0, window_size+1, request)
         agent.reset()
-        loss = 0
         for t in range(l):
-            action, confidence = agent.decide_action_test(state_reward)
+            action, confidence = agent.decide_action_test(state)
                     
-            reward, request = agent.act(action, state_resource[0][0], l, confidence)
+                    
+            reward, request = agent.act(action, data[t], resource, l, confidence)
             
-            next_state = getState(data, t, window_size + 1, request)    
-            next_state_resource = next_state['resource']
-            next_state_reward = next_state['reward']
-            next_state_reward = np.reshape(next_state_reward, [1, window_size])
-            next_state_resource = np.reshape(next_state_resource, [1, window_size])
+            next_state, next_resource = getState(data, t+1, window_size+1, request)    
             
-            temp_reward = 0.1 if reward > 0 else -1
-            done = True if reward < 0 else False
-            
-            temp_reward = reward if reward > 0 else 0
-            total_reward += temp_reward
+            total_reward += reward
             state = next_state
-
-            state_resource = state['resource']
-            state_reward = state['reward']
-            state_reward = np.reshape(state_reward, [1, window_size])
-            state_resource = np.reshape(state_resource, [1, window_size])
+            resource = next_resource
 
             if t == l-1:
-                # agent.update_target_model()
                 total_rewards.append(total_reward)
-                total_losses.append(np.mean(mean_loss))
                 episodes.append(e)
                 print("---------------------------------------------------------------------------------------------------------------------------------------------------------------------------")
-                print("Total rewards: ", total_reward, " || Mean loss: ", np.mean(mean_loss), " || last request :", agent.request, " || num_up : ", agent.num_up, " || num_down: ", agent.num_down, " || num_stay : ", agent.num_stay)
+                print("Total rewards: ", total_reward, " || last request :", agent.request, " || num_up : ", agent.num_up, " || num_down: ", agent.num_down, " || num_stay : ", agent.num_stay)
                 print("---------------------------------------------------------------------------------------------------------------------------------------------------------------------------")
 
 
-        if (e % 100 == 0) & (e != 0):
-            agent.model.save("./working/model_ep" + str(e))
-            plot_reward(total_rewards, total_losses, episodes, "score_"+str(e))
+        if (e % 10 == 0) & (e != 0):
+            plt.plot(episodes, total_rewards, 'b')
+            plt.xlabel("episode")
+            plt.title('score')
+            plt.ylabel('average score')
+            plt.savefig("score_test_"+str(e)+".png")
 
-test()
+train()
