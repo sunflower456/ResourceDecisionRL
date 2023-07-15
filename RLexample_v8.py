@@ -1,4 +1,4 @@
-# A2C
+# DQN + LSTM
 import numpy as np # linear algebra
 import pandas as pd # data processing, CSV file I/O (e.g. pd.read_csv)
 import math
@@ -11,7 +11,7 @@ print(os.listdir("./working"))
 import keras
 from keras.models import Sequential
 from keras.models import load_model
-from keras.layers import Dense
+from keras.layers import Dense, LSTM
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.initializers import RandomUniform
 import random
@@ -19,27 +19,21 @@ from collections import deque
 import tensorflow as tf
 from sklearn.preprocessing import RobustScaler
 
-
-# 정책 신경망과 가치 신경망 생성
-class A2C(tf.keras.Model):
-    def __init__(self, action_size):
-        super(A2C, self).__init__()
-        self.actor_fc = Dense(24, activation='tanh')
-        self.actor_out = Dense(action_size, activation='softmax',
-                               kernel_initializer=RandomUniform(-1e-3, 1e-3))
-        self.critic_fc1 = Dense(24, activation='tanh')
-        self.critic_fc2 = Dense(24, activation='tanh')
-        self.critic_out = Dense(1,
-                                kernel_initializer=RandomUniform(-1e-3, 1e-3))
+class DQN(tf.keras.Model):
+    def __init__(self, action_size, state_size):
+        super(DQN, self).__init__()
+        self.fc1 = LSTM(64,return_sequences=True)
+        self.fc2 = LSTM(64)
+        self.fc3 = Dense(32, activation='relu')
+        self.fc_out = Dense(action_size,
+                            kernel_initializer=RandomUniform(-1e-3, 1e-3))
 
     def call(self, x):
-        actor_x = self.actor_fc(x)
-        policy = self.actor_out(actor_x)
-
-        critic_x = self.critic_fc1(x)
-        critic_x = self.critic_fc2(critic_x)
-        value = self.critic_out(critic_x)
-        return policy, value
+        x = self.fc1(x)
+        x = self.fc2(x)
+        x = self.fc3(x)
+        q = self.fc_out(x)
+        return q
 
 class Agent:
     def __init__(self, state_size, is_eval=False, model_name=""):
@@ -58,7 +52,6 @@ class Agent:
         self.train_start = 1000
         self.is_eval = is_eval
 
-        # 액터-크리틱 하이퍼파라미터
         self.discount_factor = 0.99
         self.learning_rate = 0.001
         self.epsilon = 1.0
@@ -68,11 +61,18 @@ class Agent:
         # 리플레이 메모리, 최대 크기 2000
         self.memory = deque(maxlen=2000)
 
-        # 정책신경망과 가치신경망 생성
-        self.model = A2C(self.action_size)
-        self.model.load_weights("./model/a2c_kibana")
-        # 최적화 알고리즘 설정, 미분값이 너무 커지는 현상을 막기 위해 clipnorm 설정
-        # self.optimizer = Adam(lr=self.learning_rate, clipnorm=5.0)
+        # 모델과 타깃 모델 생성
+        self.model = DQN(self.action_size, self.state_size)
+        # self.model.load_weights("./working/model_ep2000")
+        self.target_model = DQN(self.action_size, self.state_size)
+        self.optimizer = Adam(lr=self.learning_rate)
+
+        # 타깃 모델 초기화
+        self.update_target_model()
+
+    # 타깃 모델을 모델의 가중치로 업데이트
+    def update_target_model(self):
+        self.target_model.set_weights(self.model.get_weights())
 
 
     def reset(self):
@@ -82,19 +82,26 @@ class Agent:
         self.request = 3
         return 
         
+    def append_sample(self, state, action, reward, next_state, done):
+        self.memory.append((state, action, reward, next_state, done))
+
+    def decide_action_test(self, state):
+        q_value = self.model(state)
+        action = np.argmax(q_value[0])
+        return action, sigmoid(q_value[0][action])
+
+    def decide_action(self, state):
+        if np.random.rand() <= self.epsilon:
+            return random.randrange(self.action_size), 0.5
+        else:
+            q_value = self.model(state)
+            action = np.argmax(q_value[0])
+            # print("state: ", state, " | action : ", action, " | q_value[0] : ", q_value[0])
+            return action, sigmoid(q_value[0][action])
         
-
-    # 정책신경망의 출력을 받아 확률적으로 행동을 선택
-    def get_action(self, state):
-        policy, _ = self.model.predict(state)
-        policy = np.array(policy[0])
-        # print("state: ", state, " | policy : ", policy, " | action : ",np.random.choice(self.action_size, 1, p=policy)[0])
-        return np.random.choice(self.action_size, 1, p=policy)[0], 0.5
-
-
     def decide_scaling_unit(self, request, resourceList, action, confidence):
         scaling_unit = 0.
-        if action == 0: # upscaling
+        if action == 1: # upscaling
             tempList = []
             tempList2 = []
             for i in range(len(resourceList)-1):
@@ -110,7 +117,7 @@ class Agent:
             else:
                 scaling_unit = np.mean(tempList)
 
-        elif action == 1: #downscaling
+        elif action == 2: #downscaling
             tempList = []
             tempList2 = []
             for i in range(len(resourceList)-1):
@@ -135,7 +142,7 @@ class Agent:
         usage = resource/curr_request
         reward = 0
         # upscaling
-        if action == 0:
+        if action == 1:
             # up할 단위를 판단
             self.num_scaling += 1 # scaling 횟수 증가
             self.num_up += 1 # upscaling 횟수 증가
@@ -144,11 +151,11 @@ class Agent:
             else:
                 self.request = curr_request + scaling_unit
                 reward = 1
-            # print("[UP] reward : ", reward, " || request : ", self.request, " || resource : ", resource, " || usage : ", usage, " || scale : ", scaling_unit)
+            print("[UP] reward : ", reward, " || request : ", self.request, " || resource : ", resource, " || usage : ", usage, " || scale : ", scaling_unit)
         
                         
         # downscaling
-        elif action == 1:
+        elif action == 2:
             # donw할 단위를 판단
             self.num_scaling += 1
             self.num_down = self.num_down + 1
@@ -158,7 +165,7 @@ class Agent:
             else:
                 self.request = curr_request - scaling_unit
                 reward = 1
-            # print("[DOWN] reward : ", reward, " || request : ", self.request, " || resource : ", resource, " || usage : ", usage, " || scale : ", scaling_unit)
+            print("[DOWN] reward : ", reward, " || request : ", self.request, " || resource : ", resource, " || usage : ", usage, " || scale : ", scaling_unit)
             
         # 관망
         else:
@@ -168,38 +175,46 @@ class Agent:
                 reward = 1 # 1 -> 1.5
             else:
                 reward = -1
-            # print("[STAY] reward : ", reward, " || request : ", self.request, " || resource : ", resource, " || usage : ", usage)
+            print("[STAY] reward : ", reward, " || request : ", self.request, " || resource : ", resource, " || usage : ", usage)
 
         
         return reward, self.request
 			
-    # 각 타임스텝마다 정책신경망과 가치신경망을 업데이트
-    def train_model(self, state, action, reward, next_state, done):
+    def train_model(self):
+        if self.epsilon > self.epsilon_min:
+            self.epsilon *= self.epsilon_decay
+
+        # 메모리에서 배치 크기만큼 무작위로 샘플 추출
+        mini_batch = random.sample(self.memory, self.batch_size)
+
+        states = np.array([sample[0][0] for sample in mini_batch])
+        actions = np.array([sample[1] for sample in mini_batch])
+        rewards = np.array([sample[2] for sample in mini_batch])
+        next_states = np.array([sample[3][0] for sample in mini_batch])
+        dones = np.array([sample[4] for sample in mini_batch])
+
+        # 학습 파라메터
         model_params = self.model.trainable_variables
         with tf.GradientTape() as tape:
-            policy, value = self.model(state)
-            _, next_value = self.model(next_state)
-            target = reward + (1 - done) * self.discount_factor * next_value[0]
+            # 현재 상태에 대한 모델의 큐함수
+            predicts = self.model(states)
+            one_hot_action = tf.one_hot(actions, self.action_size)
+            predicts = tf.reduce_sum(one_hot_action * predicts, axis=1)
 
-            # 정책 신경망 오류 함수 구하기
-            one_hot_action = tf.one_hot([action], self.action_size)
-            action_prob = tf.reduce_sum(one_hot_action * policy, axis=1)
-            cross_entropy = - tf.math.log(action_prob + 1e-5)
-            advantage = tf.stop_gradient(target - value[0])
-            actor_loss = tf.reduce_mean(cross_entropy * advantage)
+            # 다음 상태에 대한 타깃 모델의 큐함수
+            target_predicts = self.target_model(next_states)
+            target_predicts = tf.stop_gradient(target_predicts)
 
-            # 가치 신경망 오류 함수 구하기
-            critic_loss = 0.5 * tf.square(tf.stop_gradient(target) - value[0])
-            critic_loss = tf.reduce_mean(critic_loss)
-
-            # 하나의 오류 함수로 만들기
-            loss = 0.2 * actor_loss + critic_loss
+            # 벨만 최적 방정식을 이용한 업데이트 타깃
+            max_q = np.amax(target_predicts, axis=-1)
+            targets = rewards + (1 - dones) * self.discount_factor * max_q
+            loss = tf.reduce_mean(tf.square(targets - predicts))
 
         # 오류함수를 줄이는 방향으로 모델 업데이트
         grads = tape.gradient(loss, model_params)
         self.optimizer.apply_gradients(zip(grads, model_params))
-        return np.array(loss)
-
+        return loss
+            
 
 # returns the vector containing stock data from a fixed file
 def getResourceDataVec(key):
@@ -214,8 +229,15 @@ def getResourceDataVec(key):
 
 # returns the sigmoid
 def sigmoid(x):
-	return 1 / (1 + np.exp(-x))
+	return 1 / (1 + math.exp(-x))
 
+def create_sequences(data, seq_length):
+    xs = []
+    for i in range(len(data)-seq_length):
+        x = data[i:(i+seq_length)]
+        xs.append(x)
+    # random.shuffle(xs)    
+    return np.array(xs)
 
 def plot_reward(score, loss, episode, filename):
     plt.subplot(2, 1, 1)  
@@ -245,7 +267,7 @@ def getState(data, t, n, request):
     
     # scaler = RobustScaler()
     # state = np.reshape(state, [-1,1])
-    # state = scaler.fit_transform(state)    
+    # state = scaler.fit_transform(state)
     return np.array([state]), np.array([resource])
 
 
@@ -266,24 +288,28 @@ def train():
         request = agent.request
         done = False
         state, resource = getState(data, 0, window_size+1, request)
-        state = np.reshape(state, [1, window_size])
+        state = np.reshape(state, [1, 1, window_size])
+        # state = np.reshape(state, [1, window_size])
         agent.reset()
         loss = 0
         for t in range(l-window_size):
-            action, confidence = agent.get_action(state)
+            action, confidence = agent.decide_action(state)
                     
             reward, request = agent.act(action, data[t], resource, l, confidence)
             
             next_state, next_resource = getState(data, t+1, window_size+1, request) 
-            next_state = np.reshape(next_state, [1, window_size])   
+            next_state = np.reshape(next_state, [1, 1, window_size])
             
             done = True if reward < 0 else False
             temp_reward = 0.1 if reward > 0 else -1
             
-            loss = agent.train_model(state, action, temp_reward, next_state, done)
 
-            if loss > 1:
-                print("[",t,"] : loss : ", loss)
+            agent.append_sample(state, action, temp_reward, next_state, done)
+
+            if len(agent.memory) >= agent.train_start:
+                loss = agent.train_model()
+                if loss > 1:
+                    print("[",t,"] loss : ", loss)
 
             mean_loss.append(loss)
             total_reward += reward
@@ -291,6 +317,7 @@ def train():
             resource = next_resource
             
             if t == l-1-window_size:
+                agent.update_target_model()
                 total_rewards.append(total_reward)
                 total_losses.append(np.mean(mean_loss))
                 episodes.append(e)
@@ -305,7 +332,7 @@ def train():
 
 def test():
     
-    data, window_size, episode_count = 'kubernetes_pod_container_zipkin_test', 6, 10
+    data, window_size, episode_count = 'kubernetes_pod_container_zipkin_test', 12, 10
 
     agent = Agent(window_size)
     data = getResourceDataVec(data)
